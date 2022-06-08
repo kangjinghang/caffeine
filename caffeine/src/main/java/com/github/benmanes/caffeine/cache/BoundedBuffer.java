@@ -25,7 +25,7 @@ import java.util.function.Consumer;
  * @author ben.manes@gmail.com (Ben Manes)
  * @param <E> the type of elements maintained by this buffer
  */
-final class BoundedBuffer<E> extends StripedBuffer<E> {
+final class BoundedBuffer<E> extends StripedBuffer<E> { // 一个 striped、非阻塞、有界限的 buffer
   /*
    * A circular ring buffer stores the elements being transferred by the producers to the consumer.
    * The monotonically increasing count of reads and writes allow indexing sequentially to the next
@@ -57,7 +57,7 @@ final class BoundedBuffer<E> extends StripedBuffer<E> {
   static final class RingBuffer<E> extends BBHeader.ReadAndWriteCounterRef implements Buffer<E> {
     static final VarHandle BUFFER = MethodHandles.arrayElementVarHandle(Object[].class);
 
-    final Object[] buffer;
+    final Object[] buffer; // RingBuffer 数组
 
     public RingBuffer(E e) {
       buffer = new Object[BUFFER_SIZE];
@@ -69,23 +69,23 @@ final class BoundedBuffer<E> extends StripedBuffer<E> {
     public int offer(E e) {
       long head = readCounter;
       long tail = writeCounterOpaque();
-      long size = (tail - head);
+      long size = (tail - head);  // 用 head 和 tail 来限制个数
       if (size >= BUFFER_SIZE) {
         return Buffer.FULL;
       }
-      if (casWriteCounter(tail, tail + 1)) {
-        int index = (int) (tail & MASK);
-        BUFFER.setRelease(buffer, index, e);
+      if (casWriteCounter(tail, tail + 1)) { // tail 追加 1
+        int index = (int) (tail & MASK); // 用 tail “取余”得到下标
+        BUFFER.setRelease(buffer, index, e); // 用 unsafe.putOrderedObject 设值
         return Buffer.SUCCESS;
       }
-      return Buffer.FAILED;
+      return Buffer.FAILED;  // 如果 CAS 失败则返回失败
     }
 
     @Override
-    public void drainTo(Consumer<E> consumer) {
+    public void drainTo(Consumer<E> consumer) { // 用 consumer 来处理 buffer 的数据
       long head = readCounter;
       long tail = writeCounterOpaque();
-      long size = (tail - head);
+      long size = (tail - head); // 判断数据多少
       if (size == 0) {
         return;
       }
@@ -98,7 +98,7 @@ final class BoundedBuffer<E> extends StripedBuffer<E> {
         }
         BUFFER.setRelease(buffer, index, null);
         consumer.accept(e);
-        head++;
+        head++; // head 也跟 tail 一样，每次递增 1
       } while (head != tail);
       setReadCounterOpaque(head);
     }

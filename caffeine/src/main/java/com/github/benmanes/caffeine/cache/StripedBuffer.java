@@ -34,11 +34,11 @@ import org.checkerframework.checker.nullness.qual.Nullable;
  * implementation is an adaption of the numeric 64-bit {@link java.util.concurrent.atomic.Striped64}
  * class, which is used by atomic counters. The approach was modified to lazily grow an array of
  * buffers in order to minimize memory usage for caches that are not heavily contended on.
- *
+ * 维护一个 Buffer[] 数组，每个元素就是一个 RingBuffer，每个线程用自己 threadLocalRandomProbe 属性作为 hash 值，这样就相当于每个线程都有自己“专属”的 RingBuffer，就不会产生竞争啦，而不是用key的 hashCode 作为hash值，因为会产生热点数据问题。
  * @author dl@cs.oswego.edu (Doug Lea)
  * @author ben.manes@gmail.com (Ben Manes)
  */
-abstract class StripedBuffer<E> implements Buffer<E> {
+abstract class StripedBuffer<E> implements Buffer<E> { // 设计的思想是跟 Striped64 类似的，通过扩展结构把竞争热点分离
   /*
    * This class maintains a lazily-initialized table of atomically updated buffers. The table size
    * is a power of two. Indexing uses masked per-thread hash codes. Nearly all declarations in this
@@ -84,19 +84,19 @@ abstract class StripedBuffer<E> implements Buffer<E> {
    * again; and for short-lived ones, it does not matter.
    */
 
-  static final VarHandle TABLE_BUSY;
+  static final VarHandle TABLE_BUSY; // 当进行 resize 时，需要整个table锁住。tableBusy 作为CAS的标记。
 
   /** Number of CPUS. */
   static final int NCPU = Runtime.getRuntime().availableProcessors();
 
   /** The bound on the table size. */
-  static final int MAXIMUM_TABLE_SIZE = 4 * ceilingPowerOfTwo(NCPU);
+  static final int MAXIMUM_TABLE_SIZE = 4 * ceilingPowerOfTwo(NCPU); // table 最大 size
 
   /** The maximum number of attempts when trying to expand the table. */
-  static final int ATTEMPTS = 3;
+  static final int ATTEMPTS = 3; // 如果发生竞争时（CAS失败）的尝试次数
 
   /** Table of buffers. When non-null, size is a power of 2. */
-  volatile Buffer<E> @Nullable[] table;
+  volatile Buffer<E> @Nullable[] table; // 核心数据结构，RingBuffer 数组
 
   /** Spinlock (locked via CAS) used when resizing and/or creating Buffers. */
   volatile int tableBusy;
@@ -115,7 +115,7 @@ abstract class StripedBuffer<E> implements Buffer<E> {
   protected abstract Buffer<E> create(E e);
 
   @Override
-  public int offer(E e) {
+  public int offer(E e) { // 当没初始化或存在竞争时，则扩容为2倍。实际是调用 RingBuffer 的offer方法，把数据追加到 RingBuffer 后面。
     @SuppressWarnings("deprecation")
     long z = mix64(Thread.currentThread().getId());
     int increment = ((int) (z >>> 32)) | 1;
@@ -124,13 +124,13 @@ abstract class StripedBuffer<E> implements Buffer<E> {
     int mask;
     int result;
     Buffer<E> buffer;
-    boolean uncontended = true;
+    boolean uncontended = true;  // 是否不存在竞争
     Buffer<E>[] buffers = table;
-    if ((buffers == null)
+    if ((buffers == null)  // 是否已经初始化
         || ((mask = buffers.length - 1) < 0)
-        || ((buffer = buffers[h & mask]) == null)
-        || !(uncontended = ((result = buffer.offer(e)) != Buffer.FAILED))) {
-      return expandOrRetry(e, h, increment, uncontended);
+        || ((buffer = buffers[h & mask]) == null)  // 用 thread 的随机值作为hash值，得到对应位置的 RingBuffer
+        || !(uncontended = ((result = buffer.offer(e)) != Buffer.FAILED))) {  // 检查追加到 RingBuffer 是否成功
+      return expandOrRetry(e, h, increment, uncontended);  // 其中一个符合条件则进行扩容
     }
     return result;
   }

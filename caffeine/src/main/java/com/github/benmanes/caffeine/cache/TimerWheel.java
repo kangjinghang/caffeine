@@ -33,7 +33,7 @@ import org.checkerframework.checker.nullness.qual.Nullable;
  * @author ben.manes@gmail.com (Ben Manes)
  */
 @SuppressWarnings("GuardedBy")
-final class TimerWheel<K, V> implements Iterable<Node<K, V>> {
+final class TimerWheel<K, V> implements Iterable<Node<K, V>> { // 多层时间轮
 
   /*
    * A timer wheel [1] stores timer events in buckets on a circular buffer. A bucket represents a

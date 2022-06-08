@@ -63,10 +63,10 @@ final class FrequencySketch<E> {
   static final long RESET_MASK = 0x7777777777777777L;
   static final long ONE_MASK = 0x1111111111111111L;
 
-  int sampleSize;
-  int blockMask;
-  long[] table;
-  int size;
+  int sampleSize; // table.length*10。一个阈值
+  int blockMask; // table.length/8 - 1;
+  long[] table; // 存储数据的一维long数组
+  int size; // 所有记录的频率统计之和，即每个记录加1，这个size都会加1
 
   /**
    * Creates a lazily initialized frequency sketch, requiring {@link #ensureCapacity} be called
@@ -118,7 +118,7 @@ final class FrequencySketch<E> {
       return 0;
     }
 
-    int[] count = new int[4];
+    int[] count = new int[4]; // 4次
     int blockHash = spread(e.hashCode());
     int counterHash = rehash(blockHash);
     int block = (blockHash & blockMask) << 3;
@@ -126,9 +126,9 @@ final class FrequencySketch<E> {
       int h = counterHash >>> (i << 3);
       int index = (h >>> 1) & 15;
       int offset = h & 1;
-      count[i] = (int) ((table[block + offset + (i << 1)] >>> (index << 2)) & 0xfL);
+      count[i] = (int) ((table[block + offset + (i << 1)] >>> (index << 2)) & 0xfL); // count[i] 赋值为 counter 的计数
     }
-    return Math.min(Math.min(count[0], count[1]), Math.min(count[2], count[3]));
+    return Math.min(Math.min(count[0], count[1]), Math.min(count[2], count[3])); // 取四个中的较小值
   }
 
   /**
@@ -145,22 +145,22 @@ final class FrequencySketch<E> {
     }
 
     int[] index = new int[8];
-    int blockHash = spread(e.hashCode());
+    int blockHash = spread(e.hashCode()); // 根据 key 的 hashCode 通过一个哈希函数得到一个 hash 值，为什么还要再做一次 hash？怕原来的 hashCode 不够均匀分散，再打散一下
     int counterHash = rehash(blockHash);
     int block = (blockHash & blockMask) << 3;
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 4; i++) { // Caffeine把一个long的64bit划分成16个等分，每一等分4个bit。
       int h = counterHash >>> (i << 3);
-      index[i] = (h >>> 1) & 15;
+      index[i] = (h >>> 1) & 15; // 0<= index[i] <= 15，定位到 long 中的哪个 counter，表示16个等分的下标 0<= j <= 15，一个long有 64bit，可以存储16个这样的 Counter 统计数
       int offset = h & 1;
-      index[i + 4] = block + offset + (i << 1);
+      index[i + 4] = block + offset + (i << 1); // index[i+4] = block + offset + (i << 1)，table 数组的下标，定位到哪个 long，每个 long 中有个 16个 counter
     }
-    boolean added =
+    boolean added = // 根据index和start(+1, +2, +3)的值，把table[index]对应的等分追加1
           incrementAt(index[4], index[0])
         | incrementAt(index[5], index[1])
         | incrementAt(index[6], index[2])
         | incrementAt(index[7], index[3]);
 
-    if (added && (++size == sampleSize)) {
+    if (added && (++size == sampleSize)) { // 当整体的统计计数 size 达到 sampleSize 时，那么所有记录的频率统计除以2
       reset();
     }
   }
@@ -185,22 +185,22 @@ final class FrequencySketch<E> {
   /**
    * Increments the specified counter by 1 if it is not already at the maximum value (15).
    *
-   * @param i the table index (16 counters)
-   * @param j the counter to increment
+   * @param i the table index (16 counters) table 数组的下标，定位到哪个 long，每个 long 中有个 16个 counter
+   * @param j the counter to increment 定位到 long 中的哪个 counter，表示16个等分的下标 0<= j <= 15，一个long有 64bit，可以存储16个这样的 Counter 统计数
    * @return if incremented
    */
   boolean incrementAt(int i, int j) {
-    int offset = j << 2;
-    long mask = (0xfL << offset);
-    if ((table[i] & mask) != mask) {
-      table[i] += (1L << offset);
+    int offset = j << 2; // 0<= j <= 63 且是4的倍数，定位到 long 的哪一位，4个一组，应该16份
+    long mask = (0xfL << offset); // Caffeine把频率统计最大定为15，即0xfL，mask 就是在64位中的掩码，即1111后面跟 offset 个数的0
+    if ((table[i] & mask) != mask) { // 如果&的结果不等于15，那么就追加1。等于15就不会再加了（最多15份 offset 个数的0 ）
+      table[i] += (1L << offset); // table[i] 加上 1 后面跟 offset 个数的0（加上1份 offset 个数的0）
       return true;
     }
     return false;
   }
 
   /** Reduces every counter by half of its original value. */
-  void reset() {
+  void reset() { // 所有记录的频率统计除以2
     int count = 0;
     for (int i = 0; i < table.length; i++) {
       count += Long.bitCount(table[i] & ONE_MASK);

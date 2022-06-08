@@ -210,11 +210,11 @@ abstract class BoundedLocalCache<K, V> extends BLCHeader.DrainStatusRef
   /** The percent of the maximum weighted capacity dedicated to the main's protected space. */
   static final double PERCENT_MAIN_PROTECTED = 0.80d;
   /** The difference in hit rates that restarts the climber. */
-  static final double HILL_CLIMBER_RESTART_THRESHOLD = 0.05d;
+  static final double HILL_CLIMBER_RESTART_THRESHOLD = 0.05d; // 与上次命中率之差的阈值
   /** The percent of the total size to adapt the window by. */
-  static final double HILL_CLIMBER_STEP_PERCENT = 0.0625d;
+  static final double HILL_CLIMBER_STEP_PERCENT = 0.0625d; // 步长（调整）的大小（跟最大值 maximum 的比例）
   /** The rate to decrease the step size to adapt by. */
-  static final double HILL_CLIMBER_STEP_DECAY_RATE = 0.98d;
+  static final double HILL_CLIMBER_STEP_DECAY_RATE = 0.98d; // 步长的衰减比例
   /** The minimum popularity for allowing randomized admission. */
   static final int ADMIT_HASHDOS_THRESHOLD = 6;
   /** The maximum number of entries that can be transferred between queues. */
@@ -237,7 +237,7 @@ abstract class BoundedLocalCache<K, V> extends BLCHeader.DrainStatusRef
   final ConcurrentHashMap<Object, Node<K, V>> data;
   final PerformCleanupTask drainBuffersTask;
   final Consumer<Node<K, V>> accessPolicy;
-  final Buffer<Node<K, V>> readBuffer;
+  final Buffer<Node<K, V>> readBuffer; // 执行读写操作时，先把操作记录在缓冲区，然后在合适的时机异步、批量地执行缓冲区中的内容。但在执行缓冲区的内容时，也是需要在缓冲区加上同步锁的，不然存在并发问题，只不过这样就可以把对锁的竞争从缓存数据转移到对缓冲区上
   final NodeFactory<K, V> nodeFactory;
   final ReentrantLock evictionLock;
   final Weigher<K, V> weigher;
@@ -685,38 +685,38 @@ abstract class BoundedLocalCache<K, V> extends BLCHeader.DrainStatusRef
     if (!evicts()) {
       return;
     }
-    var candidate = evictFromWindow();
-    evictFromMain(candidate);
+    var candidate = evictFromWindow();  // 淘汰 window 区的记录
+    evictFromMain(candidate);  // 淘汰 Main 区的记录
   }
 
   /**
    * Evicts entries from the window space into the main space while the window size exceeds a
    * maximum.
-   *
+   * 根据W-TinyLFU，新的数据都会无条件的加到 admission window，但是 window 是有大小限制，所以要“定期”做一下“维护”
    * @return the first candidate promoted into the probation space
    */
   @GuardedBy("evictionLock")
-  @Nullable Node<K, V> evictFromWindow() {
+  @Nullable Node<K, V> evictFromWindow() { // 淘汰 window 区的记录
     Node<K, V> first = null;
-    Node<K, V> node = accessOrderWindowDeque().peekFirst();
-    while (windowWeightedSize() > windowMaximum()) {
+    Node<K, V> node = accessOrderWindowDeque().peekFirst();  // 查看window queue的头部节点
+    while (windowWeightedSize() > windowMaximum()) { // 如果window区超过了最大的限制，那么就要把“多出来”的记录做处理
       // The pending operations will adjust the size to reflect the correct weight
       if (node == null) {
         break;
       }
 
-      Node<K, V> next = node.getNextInAccessOrder();
+      Node<K, V> next = node.getNextInAccessOrder();  // 下一个节点
       if (node.getPolicyWeight() != 0) {
-        node.makeMainProbation();
-        accessOrderWindowDeque().remove(node);
-        accessOrderProbationDeque().offerLast(node);
+        node.makeMainProbation(); // 把 node 定位在 probation 区
+        accessOrderWindowDeque().remove(node);  // 从 window 区去掉
+        accessOrderProbationDeque().offerLast(node); // 加入到 probation queue，相当于把节点移动到 probation 区（晋升了）
         if (first == null) {
           first = node;
         }
-
+        // 因为移除了一个节点，所以需要调整 window 的 size
         setWindowWeightedSize(windowWeightedSize() - node.getPolicyWeight());
       }
-      node = next;
+      node = next; // 处理下一个节点
     }
 
     return first;
@@ -736,21 +736,21 @@ abstract class BoundedLocalCache<K, V> extends BLCHeader.DrainStatusRef
    * consumed in LRU order and the evicted entry is the one with a lower relative frequency, where
    * the preference is to retain the main space's victims versus the window space's candidates on a
    * tie.
-   *
-   * @param candidate the first candidate promoted into the probation space
+   * 根据 W-TinyLFU，从 window 晋升过来的要跟 probation 区的进行“PK”，胜者才能留下
+   * @param candidate the first candidate promoted into the probation space candidate 是 probation queue 的尾部，也就是刚从 window 晋升来的
    */
   @GuardedBy("evictionLock")
-  void evictFromMain(@Nullable Node<K, V> candidate) {
+  void evictFromMain(@Nullable Node<K, V> candidate) {  // 淘汰 Main 区的记录
     int victimQueue = PROBATION;
     int candidateQueue = PROBATION;
-    Node<K, V> victim = accessOrderProbationDeque().peekFirst();
-    while (weightedSize() > maximum()) {
+    Node<K, V> victim = accessOrderProbationDeque().peekFirst(); // victim 是 probation queue 的头部
+    while (weightedSize() > maximum()) { // 当 cache 不够容量时才做处理
       // Search the admission window for additional candidates
       if ((candidate == null) && (candidateQueue == PROBATION)) {
         candidate = accessOrderWindowDeque().peekFirst();
         candidateQueue = WINDOW;
       }
-
+      // 对 candidate 为 null且 victim 为 null 的处理
       // Try evicting from the protected and window queues
       if ((candidate == null) && (victim == null)) {
         if (victimQueue == PROBATION) {
@@ -766,7 +766,7 @@ abstract class BoundedLocalCache<K, V> extends BLCHeader.DrainStatusRef
         // The pending operations will adjust the size to reflect the correct weight
         break;
       }
-
+      // 对节点的 weight 为0的处理
       // Skip over entries with zero weight
       if ((victim != null) && (victim.getPolicyWeight() == 0)) {
         victim = victim.getNextInAccessOrder();
@@ -828,20 +828,20 @@ abstract class BoundedLocalCache<K, V> extends BLCHeader.DrainStatusRef
       }
 
       // Evict immediately if the candidate's weight exceeds the maximum
-      if (candidate.getPolicyWeight() > maximum()) {
+      if (candidate.getPolicyWeight() > maximum()) { // 放不下的节点直接处理掉
         Node<K, V> evict = candidate;
         candidate = candidate.getNextInAccessOrder();
         evictEntry(evict, RemovalCause.SIZE, 0L);
         continue;
       }
-
+      // 根据节点的统计频率 frequency 来做比较，看看要处理掉 victim 还是 candidate
       // Evict the entry with the lowest frequency
-      if (admit(candidateKey, victimKey)) {
+      if (admit(candidateKey, victimKey)) { // 如果 candidate 胜出则淘汰 victim
         Node<K, V> evict = victim;
         victim = victim.getNextInAccessOrder();
         evictEntry(evict, RemovalCause.SIZE, 0L);
         candidate = candidate.getNextInAccessOrder();
-      } else {
+      } else { // 如果是 victim 胜出，则淘汰 candidate
         Node<K, V> evict = candidate;
         candidate = candidate.getNextInAccessOrder();
         evictEntry(evict, RemovalCause.SIZE, 0L);
@@ -861,18 +861,18 @@ abstract class BoundedLocalCache<K, V> extends BLCHeader.DrainStatusRef
    */
   @GuardedBy("evictionLock")
   boolean admit(K candidateKey, K victimKey) {
-    int victimFreq = frequencySketch().frequency(victimKey);
+    int victimFreq = frequencySketch().frequency(victimKey); // 分别获取 victim 和 candidate 的统计频率
     int candidateFreq = frequencySketch().frequency(candidateKey);
-    if (candidateFreq > victimFreq) {
+    if (candidateFreq > victimFreq) { // 谁大谁赢
       return true;
     } else if (candidateFreq >= ADMIT_HASHDOS_THRESHOLD) {
       // The maximum frequency is 15 and halved to 7 after a reset to age the history. An attack
       // exploits that a hot candidate is rejected in favor of a hot victim. The threshold of a warm
       // candidate reduces the number of random acceptances to minimize the impact on the hit rate.
-      int random = ThreadLocalRandom.current().nextInt();
+      int random = ThreadLocalRandom.current().nextInt(); // 如果相等且 candidate 大于5，则随机淘汰一个
       return ((random & 127) == 0);
     }
-    return false;
+    return false;  // 如果相等 或者 candidate 小于5都算输了
   }
 
   /** Expires entries that have expired by access, write, or variable. */
@@ -1091,47 +1091,47 @@ abstract class BoundedLocalCache<K, V> extends BLCHeader.DrainStatusRef
 
     return true;
   }
-
+  // 动态调整 window 区的大小（相应的，main区的大小也会发生变化，两个之和为100%）。因为区域的大小发生了变化，那么区域内的数据也可能需要发生相应的移动。
   /** Adapts the eviction policy to towards the optimal recency / frequency configuration. */
   @GuardedBy("evictionLock")
-  void climb() {
+  void climb() { // 调整 window size 的，使得 Caffeine 可以适应你的应用类型（如OLAP或OLTP）表现出最佳的命中率
     if (!evicts()) {
       return;
     }
 
-    determineAdjustment();
-    demoteFromMainProtected();
+    determineAdjustment(); // 确定 window 需要调整的大小
+    demoteFromMainProtected();  // 如果 protected 区有溢出，把溢出部分移动到 probation 区。因为下面的操作有可能需要调整到 protected 区
     long amount = adjustment();
     if (amount == 0) {
       return;
     } else if (amount > 0) {
-      increaseWindow();
+      increaseWindow();  // 增加 window 的大小
     } else {
-      decreaseWindow();
+      decreaseWindow();  // 减少 window 的大小
     }
   }
 
   /** Calculates the amount to adapt the window by and sets {@link #adjustment()} accordingly. */
   @GuardedBy("evictionLock")
-  void determineAdjustment() {
-    if (frequencySketch().isNotInitialized()) {
+  void determineAdjustment() {  // 确定 window 需要调整的大小
+    if (frequencySketch().isNotInitialized()) { // 如果 frequencySketch 还没初始化，则返回
       setPreviousSampleHitRate(0.0);
       setMissesInSample(0);
       setHitsInSample(0);
       return;
     }
 
-    int requestCount = hitsInSample() + missesInSample();
-    if (requestCount < frequencySketch().sampleSize) {
+    int requestCount = hitsInSample() + missesInSample(); // 总请求量 = 命中 + miss
+    if (requestCount < frequencySketch().sampleSize) { // 默认下 sampleSize = 10 * maximum。用 sampleSize 来判断缓存是否足够”热“。
       return;
     }
 
-    double hitRate = (double) hitsInSample() / requestCount;
-    double hitRateChange = hitRate - previousSampleHitRate();
-    double amount = (hitRateChange >= 0) ? stepSize() : -stepSize();
-    double nextStepSize = (Math.abs(hitRateChange) >= HILL_CLIMBER_RESTART_THRESHOLD)
-        ? HILL_CLIMBER_STEP_PERCENT * maximum() * (amount >= 0 ? 1 : -1)
-        : HILL_CLIMBER_STEP_DECAY_RATE * amount;
+    double hitRate = (double) hitsInSample() / requestCount; // 命中率的公式 = 命中 / 总请求
+    double hitRateChange = hitRate - previousSampleHitRate(); // 命中率的差值
+    double amount = (hitRateChange >= 0) ? stepSize() : -stepSize(); // 本次调整的大小，是由命中率的差值和上次的 stepSize 决定的
+    double nextStepSize = (Math.abs(hitRateChange) >= HILL_CLIMBER_RESTART_THRESHOLD)  // 下次的调整大小：如果命中率的之差大于0.05，则重置为 0.065 * maximum，否则按照0.98来进行衰减
+        ? HILL_CLIMBER_STEP_PERCENT * maximum() * (amount >= 0 ? 1 : -1) // 重置为 0.065 * maximum
+        : HILL_CLIMBER_STEP_DECAY_RATE * amount; // 按照0.98来进行衰减
     setPreviousSampleHitRate(hitRate);
     setAdjustment((long) amount);
     setStepSize(nextStepSize);
@@ -1147,7 +1147,7 @@ abstract class BoundedLocalCache<K, V> extends BLCHeader.DrainStatusRef
    * admission window.
    */
   @GuardedBy("evictionLock")
-  void increaseWindow() {
+  void increaseWindow() { // 增加 window 区的大小
     if (mainProtectedMaximum() == 0) {
       return;
     }
@@ -1192,7 +1192,7 @@ abstract class BoundedLocalCache<K, V> extends BLCHeader.DrainStatusRef
 
   /** Decreases the size of the admission window and increases the main's protected region. */
   @GuardedBy("evictionLock")
-  void decreaseWindow() {
+  void decreaseWindow() { // 同上 increaseWindow 差不多，反操作
     if (windowMaximum() <= 1) {
       return;
     }
@@ -1226,7 +1226,7 @@ abstract class BoundedLocalCache<K, V> extends BLCHeader.DrainStatusRef
 
   /** Transfers the nodes from the protected to the probation region if it exceeds the maximum. */
   @GuardedBy("evictionLock")
-  void demoteFromMainProtected() {
+  void demoteFromMainProtected() { // 如果 protected 区有溢出，把溢出部分移动到 probation 区
     long mainProtectedMaximum = mainProtectedMaximum();
     long mainProtectedWeightedSize = mainProtectedWeightedSize();
     if (mainProtectedWeightedSize <= mainProtectedMaximum) {
@@ -1257,11 +1257,11 @@ abstract class BoundedLocalCache<K, V> extends BLCHeader.DrainStatusRef
    * @param recordHit if the hit count should be incremented
    * @return the refreshed value if immediately loaded, else null
    */
-  @Nullable V afterRead(Node<K, V> node, long now, boolean recordHit) {
+  @Nullable V afterRead(Node<K, V> node, long now, boolean recordHit) { // 每次缓存的读操作都会触发
     if (recordHit) {
       statsCounter().recordHits(1);
     }
-
+    // 把记录加入到 readBuffer，判断是否需要立即处理 readBuffer，注意这里无论 offer 是否成功都可以走下去的，即允许写入 readBuffer 丢失
     boolean delayable = skipReadBuffer() || (readBuffer.offer(node) != Buffer.FULL);
     if (shouldDrainBuffers(delayable)) {
       scheduleDrainBuffers();
@@ -1665,9 +1665,9 @@ abstract class BoundedLocalCache<K, V> extends BLCHeader.DrainStatusRef
       drainValueReferences();
 
       expireEntries();
-      evictEntries();
+      evictEntries(); // 把符合条件的记录淘汰掉
 
-      climb();
+      climb();  // 动态调整 window 区和 protected 区的大小
     } finally {
       if ((drainStatusOpaque() != PROCESSING_TO_IDLE) || !casDrainStatus(PROCESSING_TO_IDLE, IDLE)) {
         setDrainStatusOpaque(REQUIRED);
@@ -4558,7 +4558,7 @@ final class BLCHeader {
      *
      * @param delayable if draining the read buffer can be delayed
      */
-    boolean shouldDrainBuffers(boolean delayable) {
+    boolean shouldDrainBuffers(boolean delayable) { // caffeine 用了一组状态来定义和管理“维护”的过程
       switch (drainStatusOpaque()) {
         case IDLE:
           return !delayable;
